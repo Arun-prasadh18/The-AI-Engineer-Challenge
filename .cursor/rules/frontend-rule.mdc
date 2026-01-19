@@ -11,3 +11,4 @@ alwaysApply: false
 - You should use Next.js as it works best with Vercel. 
 - This frontend will ultimately be deployed on Vercel, but it should be possible to test locally. 
 - Always provide users with a way to run the created UI once you have created it.
+- You must ensure the UI is responsive and works well on both desktop and mobile screen sizes.
