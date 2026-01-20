@@ -21,6 +21,10 @@ import os
 import sys
 from pathlib import Path
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Ensure the rag module can be imported
 sys.path.insert(0, str(Path(__file__).parent))
 
