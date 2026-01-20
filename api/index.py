@@ -8,8 +8,8 @@ Uses RAG with ChromaDB locally, falls back to direct OpenAI on Vercel.
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from openai import OpenAI
 import os
+import json
 from typing import Optional
 
 # Try to load dotenv for local development
@@ -33,8 +33,19 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Lazy initialization of OpenAI client
+_openai_client = None
+
+def get_openai_client():
+    """Get OpenAI client, initializing lazily."""
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY environment variable not set")
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
 
 # Try to import RAG system (only available with full dependencies)
 rag_system = None
@@ -103,38 +114,42 @@ When you reference advice, mention the source (e.g., "As Shreyas Doshi often say
 @app.get("/")
 def root():
     """Health check endpoint."""
+    has_api_key = bool(os.getenv("OPENAI_API_KEY"))
     return {
         "status": "ok", 
         "service": "Product Strategy Coach API",
-        "mode": "rag" if rag_system else "direct"
+        "mode": "rag" if rag_system else "direct",
+        "api_key_configured": has_api_key
     }
 
 
 @app.get("/api/stats")
 def get_stats():
     """Get system statistics."""
+    has_api_key = bool(os.getenv("OPENAI_API_KEY"))
     if rag_system:
         stats = rag_system.get_collection_stats()
         return {
             "status": "ready",
             "mode": "rag",
             "total_chunks": stats["total_chunks"],
-            "collection_name": stats["collection_name"]
+            "collection_name": stats["collection_name"],
+            "api_key_configured": has_api_key
         }
     return {
         "status": "ready",
         "mode": "direct",
-        "message": "Using direct OpenAI mode (no RAG)"
+        "message": "Using direct OpenAI mode (no RAG)",
+        "api_key_configured": has_api_key
     }
 
 
 @app.post("/api/coach/start", response_model=CoachingStartResponse)
 def start_coaching_session(request: CoachingStartRequest):
     """Start a new coaching session."""
-    if not os.getenv("OPENAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
-    
     try:
+        client = get_openai_client()
+        
         context = ""
         if rag_system:
             # Get relevant context from RAG
@@ -164,7 +179,6 @@ Format your response as JSON with keys: intro, questions (array), frameworks (ar
             response_format={"type": "json_object"}
         )
         
-        import json
         result = json.loads(response.choices[0].message.content)
         
         return CoachingStartResponse(
@@ -173,6 +187,8 @@ Format your response as JSON with keys: intro, questions (array), frameworks (ar
             relevant_frameworks=result.get("frameworks", [])
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
@@ -180,10 +196,9 @@ Format your response as JSON with keys: intro, questions (array), frameworks (ar
 @app.post("/api/coach/chat", response_model=ChatResponse)
 def coaching_chat(request: ChatRequest):
     """Continue a coaching conversation."""
-    if not os.getenv("OPENAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
-    
     try:
+        client = get_openai_client()
+        
         context = ""
         sources = []
         
@@ -228,18 +243,16 @@ def coaching_chat(request: ChatRequest):
         reply = response.choices[0].message.content
         
         # Generate follow-up questions
-        followup_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "Generate 2-3 brief follow-up questions. Return as JSON with key 'questions' (array)."},
-                {"role": "user", "content": f"Based on: {request.message}\n\nResponse: {reply}"}
-            ],
-            temperature=0.8,
-            response_format={"type": "json_object"}
-        )
-        
-        import json
         try:
+            followup_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "Generate 2-3 brief follow-up questions. Return as JSON with key 'questions' (array)."},
+                    {"role": "user", "content": f"Based on: {request.message}\n\nResponse: {reply}"}
+                ],
+                temperature=0.8,
+                response_format={"type": "json_object"}
+            )
             followup_data = json.loads(followup_response.choices[0].message.content)
             follow_ups = followup_data.get("questions", [])[:3]
         except:
@@ -251,6 +264,8 @@ def coaching_chat(request: ChatRequest):
             follow_up_questions=follow_ups
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
