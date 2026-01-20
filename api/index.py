@@ -1,8 +1,8 @@
 """
 Product Strategy Coach API
 
-FastAPI backend that provides coaching endpoints powered by RAG
-from Lenny's Podcast transcripts on product strategy.
+FastAPI backend that provides coaching endpoints.
+Uses RAG with ChromaDB locally, falls back to direct OpenAI on Vercel.
 """
 
 from fastapi import FastAPI, HTTPException
@@ -10,17 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from openai import OpenAI
 import os
-import sys
-from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
 
-load_dotenv()
-
-# Add parent directory to path for RAG module import
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from rag import PodcastRAG
+# Try to load dotenv for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 app = FastAPI(
     title="Product Strategy Coach",
@@ -39,17 +36,22 @@ app.add_middleware(
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Initialize RAG system with persistent storage
-rag_system: Optional[PodcastRAG] = None
-
-
-def get_rag_system() -> PodcastRAG:
-    """Lazy initialization of RAG system."""
-    global rag_system
-    if rag_system is None:
-        persist_dir = Path(__file__).parent.parent / "chroma_db"
+# Try to import RAG system (only available with full dependencies)
+rag_system = None
+try:
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from rag import PodcastRAG
+    
+    persist_dir = Path(__file__).parent.parent / "chroma_db"
+    if persist_dir.exists():
         rag_system = PodcastRAG(persist_directory=str(persist_dir))
-    return rag_system
+        print("✓ RAG system loaded with ChromaDB")
+except ImportError:
+    print("⚠ RAG dependencies not available, using direct OpenAI mode")
+except Exception as e:
+    print(f"⚠ Could not load RAG system: {e}")
 
 
 # ============== Request/Response Models ==============
@@ -66,7 +68,7 @@ class ChatResponse(BaseModel):
 
 
 class CoachingStartRequest(BaseModel):
-    challenge: str = Field(..., description="The product challenge or question the user wants help with")
+    challenge: str = Field(..., description="The product challenge or question")
 
 
 class CoachingStartResponse(BaseModel):
@@ -75,9 +77,25 @@ class CoachingStartResponse(BaseModel):
     relevant_frameworks: list[str]
 
 
-class GuestListResponse(BaseModel):
-    guests: list[dict]
-    total_count: int
+# ============== Coaching System Prompt ==============
+
+COACH_SYSTEM_PROMPT = """You are an expert product strategy coach with deep knowledge from 
+interviewing 50+ world-class product leaders including:
+- Shreyas Doshi (ex-Stripe, Twitter, Google)
+- Marty Cagan (Silicon Valley Product Group)
+- Gibson Biddle (ex-Netflix)
+- Lenny Rachitsky (ex-Airbnb)
+- And many more top PMs from companies like Meta, Airbnb, Spotify, Notion, etc.
+
+Your role is to:
+1. Listen empathetically to product challenges
+2. Ask clarifying questions to understand context
+3. Share relevant frameworks and mental models
+4. Provide actionable, specific advice
+5. Reference insights from product leaders when relevant
+
+Be conversational, warm, and supportive. Keep responses focused and concise (2-3 paragraphs max).
+When you reference advice, mention the source (e.g., "As Shreyas Doshi often says...")"""
 
 
 # ============== Endpoints ==============
@@ -85,73 +103,62 @@ class GuestListResponse(BaseModel):
 @app.get("/")
 def root():
     """Health check endpoint."""
-    return {"status": "ok", "service": "Product Strategy Coach API"}
+    return {
+        "status": "ok", 
+        "service": "Product Strategy Coach API",
+        "mode": "rag" if rag_system else "direct"
+    }
 
 
 @app.get("/api/stats")
 def get_stats():
-    """Get RAG system statistics."""
-    try:
-        rag = get_rag_system()
-        stats = rag.get_collection_stats()
+    """Get system statistics."""
+    if rag_system:
+        stats = rag_system.get_collection_stats()
         return {
             "status": "ready",
+            "mode": "rag",
             "total_chunks": stats["total_chunks"],
-            "collection_name": stats["collection_name"],
-            "embedding_model": stats["embedding_model"]
+            "collection_name": stats["collection_name"]
         }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    return {
+        "status": "ready",
+        "mode": "direct",
+        "message": "Using direct OpenAI mode (no RAG)"
+    }
 
 
 @app.post("/api/coach/start", response_model=CoachingStartResponse)
 def start_coaching_session(request: CoachingStartRequest):
-    """
-    Start a new coaching session by analyzing the user's product challenge.
-    Returns clarifying questions and relevant frameworks to explore.
-    """
+    """Start a new coaching session."""
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
     
     try:
-        rag = get_rag_system()
+        context = ""
+        if rag_system:
+            # Get relevant context from RAG
+            rag_result = rag_system.query(
+                f"Product strategy advice for: {request.challenge}",
+                n_results=3,
+                include_context=True
+            )
+            context = f"\n\nRelevant insights from podcast interviews:\n{rag_result.get('context', '')}"
         
-        # Query RAG for relevant context about the challenge
-        rag_result = rag.query(
-            f"Product strategy advice for: {request.challenge}",
-            n_results=5,
-            include_context=True
-        )
-        
-        # Generate coaching response with clarifying questions
-        system_prompt = """You are an expert product strategy coach drawing from insights 
-shared by world-class product leaders on Lenny's Podcast.
-
-Your role is to:
-1. Acknowledge the user's challenge with empathy
-2. Ask 2-3 clarifying questions to better understand their situation
-3. Identify 2-3 relevant frameworks or mental models that might help
-
-Be concise, warm, and actionable. Reference specific guests when appropriate."""
-
-        user_prompt = f"""A product professional needs help with this challenge:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": COACH_SYSTEM_PROMPT},
+                {"role": "user", "content": f"""A product professional needs help with this challenge:
 "{request.challenge}"
-
-Context from podcast transcripts:
-{rag_result.get('context', '')}
+{context}
 
 Provide:
 1. A brief, empathetic intro (2-3 sentences)
 2. 2-3 clarifying questions to understand their situation better
-3. 2-3 relevant frameworks or approaches mentioned by podcast guests
+3. 2-3 relevant frameworks or approaches
 
-Format your response as JSON with keys: intro, questions (array), frameworks (array)"""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+Format your response as JSON with keys: intro, questions (array), frameworks (array)"""}
             ],
             temperature=0.7,
             response_format={"type": "json_object"}
@@ -167,55 +174,49 @@ Format your response as JSON with keys: intro, questions (array), frameworks (ar
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error starting coaching session: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
 @app.post("/api/coach/chat", response_model=ChatResponse)
 def coaching_chat(request: ChatRequest):
-    """
-    Continue a coaching conversation with RAG-powered responses.
-    Maintains conversation context and provides sources.
-    """
+    """Continue a coaching conversation."""
     if not os.getenv("OPENAI_API_KEY"):
         raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
     
     try:
-        rag = get_rag_system()
+        context = ""
+        sources = []
         
-        # Query RAG for relevant context
-        rag_result = rag.query(
-            request.message,
-            n_results=5,
-            include_context=True
-        )
+        if rag_system:
+            # Get relevant context from RAG
+            rag_result = rag_system.query(
+                request.message,
+                n_results=3,
+                include_context=True
+            )
+            context = f"\n\nRelevant insights from podcast interviews:\n{rag_result.get('context', '')}"
+            sources = [
+                {
+                    "guest": s["guest"],
+                    "episode": s["episode_title"],
+                    "youtube_url": s["youtube_url"],
+                    "timestamp": s.get("timestamp", ""),
+                    "relevance": round(s["relevance_score"] * 100)
+                }
+                for s in rag_result.get("sources", [])[:3]
+            ]
         
-        # Build conversation messages
-        system_prompt = """You are an expert product strategy coach. You provide advice based on 
-insights from world-class product leaders featured on Lenny's Podcast.
-
-Guidelines:
-- Be conversational, warm, and supportive
-- Cite specific guests and their advice when relevant
-- Provide actionable recommendations
-- Ask follow-up questions to go deeper
-- Keep responses focused and concise (2-3 paragraphs max)
-- When referencing podcast content, mention the guest's name and company"""
-
-        messages = [{"role": "system", "content": system_prompt}]
+        messages = [{"role": "system", "content": COACH_SYSTEM_PROMPT}]
         
         # Add conversation history
-        for msg in request.conversation_history[-10:]:  # Keep last 10 messages
+        for msg in request.conversation_history[-10:]:
             messages.append(msg)
         
-        # Add current message with RAG context
-        user_message_with_context = f"""User question: {request.message}
-
-Relevant insights from Lenny's Podcast:
-{rag_result.get('context', '')}
-
-Provide a helpful coaching response based on these podcast insights."""
-        
-        messages.append({"role": "user", "content": user_message_with_context})
+        # Add current message
+        messages.append({
+            "role": "user", 
+            "content": f"{request.message}{context}"
+        })
         
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -230,8 +231,8 @@ Provide a helpful coaching response based on these podcast insights."""
         followup_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Generate 2-3 brief follow-up questions the user might want to ask next. Return as JSON array."},
-                {"role": "user", "content": f"Based on this coaching exchange about: {request.message}\n\nCoach's response: {reply}"}
+                {"role": "system", "content": "Generate 2-3 brief follow-up questions. Return as JSON with key 'questions' (array)."},
+                {"role": "user", "content": f"Based on: {request.message}\n\nResponse: {reply}"}
             ],
             temperature=0.8,
             response_format={"type": "json_object"}
@@ -240,115 +241,22 @@ Provide a helpful coaching response based on these podcast insights."""
         import json
         try:
             followup_data = json.loads(followup_response.choices[0].message.content)
-            follow_ups = followup_data.get("questions", followup_data.get("follow_up_questions", []))
+            follow_ups = followup_data.get("questions", [])[:3]
         except:
             follow_ups = []
-        
-        # Format sources for frontend
-        sources = [
-            {
-                "guest": s["guest"],
-                "episode": s["episode_title"],
-                "youtube_url": s["youtube_url"],
-                "timestamp": s.get("timestamp", ""),
-                "relevance": round(s["relevance_score"] * 100)
-            }
-            for s in rag_result.get("sources", [])[:3]  # Top 3 sources
-        ]
         
         return ChatResponse(
             reply=reply,
             sources=sources,
-            follow_up_questions=follow_ups[:3] if isinstance(follow_ups, list) else []
+            follow_up_questions=follow_ups
         )
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error in coaching chat: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
-@app.get("/api/guests", response_model=GuestListResponse)
-def get_guests():
-    """Get list of all guests in the product strategy collection."""
-    try:
-        rag = get_rag_system()
-        
-        # Get all unique guests from the collection
-        results = rag.collection.get(include=["metadatas"])
-        
-        guests_set = {}
-        for metadata in results.get("metadatas", []):
-            guest = metadata.get("guest", "Unknown")
-            if guest not in guests_set:
-                guests_set[guest] = {
-                    "name": guest,
-                    "episode_title": metadata.get("episode_title", ""),
-                    "youtube_url": metadata.get("youtube_url", "")
-                }
-        
-        guests_list = list(guests_set.values())
-        guests_list.sort(key=lambda x: x["name"])
-        
-        return GuestListResponse(
-            guests=guests_list,
-            total_count=len(guests_list)
-        )
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching guests: {str(e)}")
-
-
-@app.post("/api/ask-guest")
-def ask_specific_guest(guest_name: str, question: str):
-    """
-    Ask a question to a specific guest based on their episode content.
-    """
-    if not os.getenv("OPENAI_API_KEY"):
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY not configured")
-    
-    try:
-        rag = get_rag_system()
-        
-        # Query with guest filter
-        question_with_guest = f"What does {guest_name} say about: {question}"
-        rag_result = rag.query(question_with_guest, n_results=5, include_context=True)
-        
-        # Filter to only include chunks from this guest
-        relevant_sources = [
-            s for s in rag_result.get("sources", [])
-            if guest_name.lower() in s.get("guest", "").lower()
-        ]
-        
-        system_prompt = f"""You are channeling the perspective of {guest_name} based on their 
-interview on Lenny's Podcast. Answer as if you are sharing {guest_name}'s views and experiences.
-
-Guidelines:
-- Stay true to what {guest_name} actually said in their interview
-- Use first person when appropriate ("In my experience at [company]...")
-- Be specific about frameworks and examples they shared
-- If the context doesn't contain relevant info from this guest, acknowledge that"""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Question: {question}\n\nContext from {guest_name}'s interview:\n{rag_result.get('context', '')}"}
-            ],
-            temperature=0.7
-        )
-        
-        return {
-            "guest": guest_name,
-            "answer": response.choices[0].message.content,
-            "sources": relevant_sources[:3],
-            "youtube_url": relevant_sources[0].get("youtube_url", "") if relevant_sources else ""
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error asking guest: {str(e)}")
-
-
-# Legacy endpoint for backwards compatibility
+# Legacy endpoint
 @app.post("/api/chat")
 def chat(request: ChatRequest):
-    """Legacy chat endpoint - redirects to coaching chat."""
+    """Legacy chat endpoint."""
     return coaching_chat(request)
