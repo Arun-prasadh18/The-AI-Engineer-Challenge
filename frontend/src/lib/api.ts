@@ -2,7 +2,11 @@
  * API client for the Product Strategy Coach backend
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+// Use Railway backend in production, localhost in development
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 
+  (typeof window !== 'undefined' && window.location.hostname !== 'localhost' 
+    ? 'https://the-ai-engineer-challenge-production-b4e2.up.railway.app' 
+    : 'http://localhost:8000');
 
 export interface Source {
   guest: string;

@@ -1,8 +1,6 @@
 {
   "version": 2,
-  "routes": [
-    { "src": "/(.*)", "dest": "/api/index.py" }
-  ]
+  "buildCommand": "cd frontend && npm install && npm run build",
+  "outputDirectory": "frontend/.next",
+  "framework": "nextjs"
 }
-
-
