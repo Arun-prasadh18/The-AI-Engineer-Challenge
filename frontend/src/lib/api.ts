@@ -5,6 +5,12 @@
 // API URL: set NEXT_PUBLIC_API_URL in production, defaults to localhost for dev
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
+// Log API configuration (only in browser)
+if (typeof window !== 'undefined') {
+  console.log('[API Config] Base URL:', API_BASE_URL);
+  console.log('[API Config] Environment:', process.env.NODE_ENV);
+}
+
 export interface Source {
   guest: string;
   episode: string;
@@ -42,17 +48,31 @@ export interface StatsResponse {
  * Start a new coaching session with a product challenge
  */
 export async function startCoachingSession(challenge: string): Promise<CoachingStartResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/coach/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ challenge }),
-  });
+  const url = `${API_BASE_URL}/api/coach/start`;
+  console.log('[API] Starting coaching session:', url);
   
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge }),
+    });
+    
+    console.log('[API] Response status:', response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[API] Error response:', errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log('[API] Success:', data);
+    return data;
+  } catch (error) {
+    console.error('[API] Fetch error:', error);
+    throw error;
   }
-  
-  return response.json();
 }
 
 /**
@@ -62,20 +82,34 @@ export async function sendChatMessage(
   message: string,
   conversationHistory: Array<{ role: string; content: string }>
 ): Promise<ChatResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/coach/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      message,
-      conversation_history: conversationHistory,
-    }),
-  });
+  const url = `${API_BASE_URL}/api/coach/chat`;
+  console.log('[API] Sending chat message:', url);
   
-  if (!response.ok) {
-    throw new Error(`API error: ${response.status}`);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        conversation_history: conversationHistory,
+      }),
+    });
+    
+    console.log('[API] Response status:', response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[API] Error response:', errorText);
+      throw new Error(`API error: ${response.status} - ${errorText}`);
+    }
+    
+    const data = await response.json();
+    console.log('[API] Success');
+    return data;
+  } catch (error) {
+    console.error('[API] Fetch error:', error);
+    throw error;
   }
-  
-  return response.json();
 }
 
 /**
