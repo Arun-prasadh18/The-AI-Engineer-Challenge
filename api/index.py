@@ -7,10 +7,13 @@ Uses RAG with ChromaDB locally, falls back to direct OpenAI on Vercel.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import os
 import json
 from typing import Optional
+from pathlib import Path
 
 # Try to load dotenv for local development
 try:
