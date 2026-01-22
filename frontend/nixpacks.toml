@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_20", "npm-9_x"]
 
 [phases.build]
-cmds = ["npm install", "npm run build"]
+cmds = ["npm install", "npm run build", "cp -r .next/static .next/standalone/.next/static", "cp -r public .next/standalone/public || true"]
 
 [start]
-cmd = "npx next start -H 0.0.0.0 -p $PORT"
+cmd = "node .next/standalone/server.js"

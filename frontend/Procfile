@@ -1,1 +1,1 @@
-web: npx next start -p $PORT
+web: node .next/standalone/server.js
