@@ -115,6 +115,7 @@ When you reference advice, mention the source (e.g., "As Shreyas Doshi often say
 # ============== Endpoints ==============
 
 @app.get("/")
+@app.get("/api")
 def root():
     """Health check endpoint."""
     has_api_key = bool(os.getenv("OPENAI_API_KEY"))
@@ -126,6 +127,7 @@ def root():
     }
 
 
+@app.get("/stats")
 @app.get("/api/stats")
 def get_stats():
     """Get system statistics."""
@@ -147,6 +149,7 @@ def get_stats():
     }
 
 
+@app.post("/coach/start", response_model=CoachingStartResponse)
 @app.post("/api/coach/start", response_model=CoachingStartResponse)
 def start_coaching_session(request: CoachingStartRequest):
     """Start a new coaching session."""
@@ -196,6 +199,7 @@ Format your response as JSON with keys: intro, questions (array), frameworks (ar
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 
+@app.post("/coach/chat", response_model=ChatResponse)
 @app.post("/api/coach/chat", response_model=ChatResponse)
 def coaching_chat(request: ChatRequest):
     """Continue a coaching conversation."""
@@ -274,6 +278,7 @@ def coaching_chat(request: ChatRequest):
 
 
 # Legacy endpoint
+@app.post("/chat")
 @app.post("/api/chat")
 def chat(request: ChatRequest):
     """Legacy chat endpoint."""
