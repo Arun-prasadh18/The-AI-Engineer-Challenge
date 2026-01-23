@@ -2,8 +2,9 @@
  * API client for the Product Strategy Coach backend
  */
 
-// API URL: set NEXT_PUBLIC_API_URL in production, empty default uses relative URLs on Vercel
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '';
+// API URL: empty default uses relative URLs on Vercel (same domain)
+// For local dev, set NEXT_PUBLIC_API_URL=http://localhost:8000
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? '';
 
 // Log API configuration (only in browser)
 if (typeof window !== 'undefined') {
